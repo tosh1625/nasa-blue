@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import SB_support_updated
-from seabass_columns import seabass_columns
+from Utilities.seabass_column_names import seabass_columns
 from Utilities.collect_file_paths import collect_file_paths
 
 class Seabass:
