@@ -18,16 +18,26 @@ def base62_to_int(s, alphabet=ALPHABET):
         n = n * 62 + alphabet.index(char)
     return n
 
-def encode_lossless_geohash(lat, lng, precision):
-    scale = 10 ** precision
-    lat_num = round((lat + 90) * scale)
-    lng_num = round((lng + 180) * scale)
-    width_lat = math.ceil(math.log(180 * scale + 1, 62))
-    width_lng = math.ceil(math.log(360 * scale + 1, 62))
-    width = max(width_lat, width_lng)
-    lat_code = int_to_base62(lat_num, width)
-    lng_code = int_to_base62(lng_num, width)
-    return f"{lat_code}.{lng_code}"
+def encode_lossless_geohash(lat, lng, precision, filename):
+    if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
+        if not -90 <= lat <= 90:
+            print(filename + ' has invalid latitude, ' + str(lat) + '. Returning None')
+            return None
+        if not -180 <= lng <= 180:
+            print(filename + ' has invalid longitude, ' + str(lng) + '. Returning None')
+            return None
+        scale = 10 ** precision
+        lat_num = round((lat + 90) * scale)
+        lng_num = round((lng + 180) * scale)
+        width_lat = math.ceil(math.log(180 * scale + 1, 62))
+        width_lng = math.ceil(math.log(360 * scale + 1, 62))
+        width = max(width_lat, width_lng)
+        lat_code = int_to_base62(lat_num, width)
+        lng_code = int_to_base62(lng_num, width)
+        return f"{lat_code}.{lng_code}"
+    else:
+        print(f"Non-numeric latitude({lat}) and/or longitude({lng}). Returning None")
+        return None
 
 def decode_lossless_geohash(code, precision):
     if not code or '.' not in code:
