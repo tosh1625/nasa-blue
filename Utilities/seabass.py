@@ -2,8 +2,10 @@ import pandas as pd
 import numpy as np
 import sys
 import SB_support_updated
+from datetime import datetime, timedelta
 from Utilities.seabass_column_names import seabass_columns
 from Utilities.collect_file_paths import collect_file_paths
+from Utilities.lossless_geohash import encode_lossless_geohash
 
 class Seabass:
 
@@ -14,7 +16,7 @@ class Seabass:
         import_columns = set()
 
         # Add date and time columns
-        import_columns.update(['serialdate', 'date', 'year', 'month', 'day', 'time', 'hour', 'minute', 'second'])
+        import_columns.update(['serialdate', 'date', 'year', 'month', 'day', 'sdy', 'time', 'hour', 'minute', 'second'])
         # Add geolocation columns
         import_columns.update(['lat', 'lon'])
 
@@ -99,6 +101,7 @@ class Seabass:
                 df = sub_df
             else:
                 df = pd.merge(df, sub_df, how='outer')
+                # df = pd.concat([df, sub_df], ignore_index=True)
 
         # Create date and time columns if missing
         for c in ['serialdate', 'date', 'year', 'month', 'day', 'hour', 'minute', 'second']:
@@ -123,9 +126,22 @@ class Seabass:
         df['minute'] = df['minute'].combine_first(date_series[2])
         df['second'] = df['second'].combine_first(date_series[2])
 
+        # If dataframe contains SDY column, convert to month and day
+        def convert_sdy(row):
+            if pd.notnull(row['year']) and pd.notnull(row['sdy']):
+                date = datetime(int(row['year']), 1, 1) + timedelta(days=int(row['sdy']) - 1)
+                return pd.Series([date.month, date.day])
+            else:
+                return pd.Series([None, None])
+
+        if 'sdy' in df.columns:
+            mmdd = df[['year', 'sdy']].apply(convert_sdy, axis=1)
+            df['month'] = df['month'].combine_first(mmdd[0])
+            df['day'] = df['day'].combine_first(mmdd[1])
+
         # If year, month, day columns are missing, generate using date values
         def split_date(row):
-            if pd.notna(row['date']) and pd.isna(['serialdate']):
+            if pd.notna(row['date']) and pd.isna(row['serialdate']):
                 str_date = str(int(row['date']))
                 return pd.Series([int(str_date[:4]), int(str_date[4:6]), int(str_date[6:8])])
             else:
@@ -143,13 +159,14 @@ class Seabass:
 
         # If hour, minute, second columns are missing, generate using time or serialdate values
         def split_time(row):
-            if pd.notna(row['time']) and pd.isna(['serialdate']):
+            if pd.notna(row['time']) and pd.isna(row['serialdate']):
                 str_time = row['time'].split(':')
                 return pd.Series([int(str_time[0]), int(str_time[1]), int(str_time[2])])
             else:
                 return pd.Series([None, None, None])
 
         time_series = df[['time', 'serialdate']].apply(split_time, axis=1)
+
         df['hour'] = df['hour'].combine_first(time_series[0])
         df['minute'] = df['minute'].combine_first(time_series[1])
         df['second'] = df['second'].combine_first(time_series[2])
@@ -158,6 +175,13 @@ class Seabass:
         df['time'] = df.apply(lambda r: f"{int(r['hour'])}:{int(r['minute']):02d}:{int(r['second']):02d}"
             if pd.isna(r['time']) and pd.isna(r['serialdate']) and
                all(pd.notna(r[c]) for c in ['hour', 'minute', 'second']) else r['time'], axis=1)
+
+        # Add lossless Geohash column
+        df['geohash_p6'] = df.apply(lambda row: encode_lossless_geohash(lat=row['lat'], lng=row['lon'], precision=6,
+                                                                        filename=row['filename']), axis=1)
+
+        # Remove sdy and serialdate columns
+        df = df.drop(columns=['sdy', 'serialdate'])
 
         print("\nInvalid values have been replaced by NaNs in the following columns:")
         print(*invalid_format, sep='\n')
@@ -177,8 +201,9 @@ class Seabass:
 
         # Set file path and name
         export_location = sb_file_directory[:sb_file_directory.rfind('/') + 1]
-        csv_name = sb_file_directory.split('/')[-1] + '.csv'
+        yyyymmdd = datetime.now().strftime('%Y%m%d')
+        csv_name = sb_file_directory.split('/')[-1] + ' ' + yyyymmdd + '_C' + str(df.shape[1]) + '.csv'
 
         # Export dataframe as CSV
-        df.to_csv(export_location + csv_name)
+        df.to_csv(export_location + csv_name, index=False)
         print('\n' + csv_name + ' has been created in ' + export_location)
