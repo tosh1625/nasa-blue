@@ -1,22 +1,28 @@
 import pandas as pd
 import numpy as np
 import sys
+import re
 import SB_support_updated
 from datetime import datetime, timedelta
 from Utilities.seabass_column_names import seabass_columns
 from Utilities.collect_file_paths import collect_file_paths
 from Utilities.lossless_geohash import encode_lossless_geohash
+from Utilities.convert_time import *
+
+def extract_degree(sb_degree):
+    return float(re.search(r'[-]?\d+\.?\d*', sb_degree).group(0))
 
 class Seabass:
 
     def create_df(self, sb_file_directory, start_year=1900, end_year=2025, chl_all=False, depth_all=False, kd_all=False,
-                  spm_all=False, additional_columns=None, preview_column_list=False):
+                  rrs_all=False, spm_all=False, additional_columns=None, preview_column_list=False):
 
         # Create list of columns to import
         import_columns = set()
 
         # Add date and time columns
-        import_columns.update(['serialdate', 'date', 'year', 'month', 'day', 'sdy', 'time', 'hour', 'minute', 'second'])
+        import_columns.update(['serialdate', 'date', 'year', 'month', 'day', 'sdy', 'solar_time', 'solar_time_gmt',
+                               'time', 'hour', 'minute', 'second'])
         # Add geolocation columns
         import_columns.update(['lat', 'lon'])
 
@@ -30,6 +36,9 @@ class Seabass:
         # Add diffuse attenuation coefficient columns
         if kd_all:
             import_columns.update(c for c in seabass_columns if c.startswith("kd"))
+        # Add remote sensing reflectance columns
+        if rrs_all:
+            import_columns.update(c for c in seabass_columns if c.startswith("rrs"))
         # Add total suspended particulate matter columns
         if spm_all:
             import_columns.update(c for c in seabass_columns if c.startswith("spm_") or c == "spm")
@@ -66,6 +75,9 @@ class Seabass:
 
             print(str(n+1) + '/' + str(num_paths) + ' ' + file_path)
 
+            # Get file name
+            file_name = file_path.split('/')[-1]
+
             # Create blank dataframe
             sub_df = pd.DataFrame()
 
@@ -77,31 +89,72 @@ class Seabass:
                    [sb_data.headers['start_date'][:4], sb_data.headers['end_date'][:4]]):
                 continue
 
-            # Populate dataframe
+            # Populate sub-dataframe
             for k, v in sb_data.data.items():
-
-                # Mark invalid values as NaN
-                values_to_replace = {'NULL'}
-                if any(x in values_to_replace for x in v):
-                    v = [np.nan if x in values_to_replace else x for x in v]
-                    invalid_format.append((file_path, k))
-
                 if k in import_columns:
                     sub_df[k] = v
 
+            # If latitude and longitude columns do not exist, copy values from header
+            if not {'lat', 'lon'}.issubset(sub_df.columns) and \
+                    {'north_latitude', 'east_longitude'}.issubset(sb_data.headers.keys()):
+                lat_north = sb_data.headers.get('north_latitude')
+                lat_south = sb_data.headers.get('south_latitude')
+                lon_east = sb_data.headers.get('east_longitude')
+                lon_west = sb_data.headers.get('west_longitude')
+
+                # If geolocation is not area, populate latitude and longitude columns
+                if lat_north == lat_south and lon_east == lon_west:
+                    sub_df['lat'] = extract_degree(lat_north)
+                    sub_df['lon'] = extract_degree(lon_east)
+                else:
+                    print(f"    Geolocation in {file_name} header is an area, not a point. Populating cells with NaN.")
+                    sub_df['lat'] = np.nan
+                    sub_df['lon'] = np.nan
+
+            # If dates are not in columns, copy from file header
+            if all(c not in sub_df.columns for c in ['date', 'serialdate', 'year', 'month', 'day', 'sdy']):
+                start_date = sb_data.headers.get('start_date')
+                end_date = sb_data.headers.get('end_date')
+
+                assert len(str(start_date)) == 8, "start_date must be 8 digits long."
+                assert len(str(end_date)) == 8, "end_date must be 8 digits long."
+
+                if start_date != end_date:
+                    print(f"Start date and end date are not the same: {start_date} and {end_date}")
+                else:
+                    sub_df['year'] = int(start_date[:4])
+                    sub_df['month'] = int(start_date[4:6])
+                    sub_df['day'] = int(start_date[6:8])
+
+            # If solar time is used, convert to standard time
+            if all(c not in sub_df.columns for c in ['serialdate', 'hour', 'minute', 'second']):
+
+                if 'solar_time' in sub_df.columns:
+                    time_series = sub_df['solar_time'].apply(solar_time_to_hms)
+                    sub_df['hour'] = time_series[0]
+                    sub_df['minute'] = time_series[1]
+                    sub_df['day'] = time_series[2]
+
+                if 'solar_time_gmt' in sub_df.columns:
+                    time_series = sub_df['solar_time_gmt'].apply(solar_time_to_hms,
+                                    args=(True, extract_degree(sb_data.headers.get('east_longitude'))))
+                    sub_df['hour'] = time_series[0]
+                    sub_df['minute'] = time_series[1]
+                    sub_df['day'] = time_series[2]
+
+            # Convert column data types
             for col in sub_df.columns:
                 if col not in ['time', 'depth_code']:
                     sub_df[col] = sub_df[col].astype(float)
 
             # Add original Seabass file name to dataframe
-            sub_df['filename'] = file_path.split('/')[-1]
+            sub_df['filename'] = file_name
 
             # Merge dataframe to main dataframe
             if df.empty:
                 df = sub_df
             else:
                 df = pd.merge(df, sub_df, how='outer')
-                # df = pd.concat([df, sub_df], ignore_index=True)
 
         # Create date and time columns if missing
         for c in ['serialdate', 'date', 'year', 'month', 'day', 'hour', 'minute', 'second']:
@@ -181,7 +234,10 @@ class Seabass:
                                                                         filename=row['filename']), axis=1)
 
         # Remove sdy and serialdate columns
-        df = df.drop(columns=['sdy', 'serialdate'])
+        if 'sdy' in df.columns:
+            df.drop(columns='sdy', inplace=True)
+        if 'serialdate' in df.columns:
+            df.drop(columns='serialdate', inplace=True)
 
         print("\nInvalid values have been replaced by NaNs in the following columns:")
         print(*invalid_format, sep='\n')
@@ -193,16 +249,17 @@ class Seabass:
 
 
     def create_csv(self, sb_file_directory, start_year=1900, end_year=2025, chl_all=False, depth_all=False,
-                   kd_all=False, spm_all=False, additional_columns=None, preview_column_list=False):
+                   kd_all=False, rrs_all=False, spm_all=False, additional_columns=None, preview_column_list=False):
 
         # Create dataframe
-        df = self.create_df(sb_file_directory, start_year, end_year, chl_all, depth_all, kd_all, spm_all,
+        df = self.create_df(sb_file_directory, start_year, end_year, chl_all, depth_all, kd_all, rrs_all, spm_all,
                             additional_columns, preview_column_list)
 
         # Set file path and name
         export_location = sb_file_directory[:sb_file_directory.rfind('/') + 1]
         yyyymmdd = datetime.now().strftime('%Y%m%d')
-        csv_name = sb_file_directory.split('/')[-1] + ' ' + yyyymmdd + '_C' + str(df.shape[1]) + '.csv'
+        csv_name = ('seabass_' + yyyymmdd + '_r' + str(df.shape[0])
+                    + '_c' + str(df.shape[1]) + '.csv')
 
         # Export dataframe as CSV
         df.to_csv(export_location + csv_name, index=False)
