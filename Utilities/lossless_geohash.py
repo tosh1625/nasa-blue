@@ -21,10 +21,10 @@ def base62_to_int(s, alphabet=ALPHABET):
 def encode_lossless_geohash(lat, lng, precision, filename):
     if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
         if not -90 <= lat <= 90:
-            print(filename + ' has invalid latitude, ' + str(lat) + '. Returning None')
+            print(f"    {filename} has invalid latitude, {str(lat)}. Unable to generate geohash.")
             return None
         if not -180 <= lng <= 180:
-            print(filename + ' has invalid longitude, ' + str(lng) + '. Returning None')
+            print(f"    {filename} has invalid longitude, {str(lat)}. Unable to generate geohash.")
             return None
         scale = 10 ** precision
         lat_num = round((lat + 90) * scale)
@@ -36,7 +36,7 @@ def encode_lossless_geohash(lat, lng, precision, filename):
         lng_code = int_to_base62(lng_num, width)
         return f"{lat_code}.{lng_code}"
     else:
-        print(f"Non-numeric latitude({lat}) and/or longitude({lng}). Returning None")
+        print(f"    Non-numeric latitude({lat}) and/or longitude({lng}). Unable to generate geohash.")
         return None
 
 def decode_lossless_geohash(code, precision):
