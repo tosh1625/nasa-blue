@@ -18,7 +18,7 @@ def base62_to_int(s, alphabet=ALPHABET):
         n = n * 62 + alphabet.index(char)
     return n
 
-def encode_lossless_geohash(lat, lng, precision, filename):
+def encode_lossless_geohash(lat, lng, precision, filename=None):
     if isinstance(lat, (int, float)) and isinstance(lng, (int, float)):
         if not -90 <= lat <= 90:
             print(f"    {filename} has invalid latitude, {str(lat)}. Unable to generate geohash.")
