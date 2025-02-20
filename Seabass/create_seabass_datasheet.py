@@ -1,4 +1,4 @@
-from Utilities.seabass import Seabass
+from Seabass.seabass import Seabass
 
 Seabass().create_csv(sb_file_directory='/path/to/your/seabass_curated', chl_all=False, depth_all=False,
                      kd_all=False, rrs_all=True, spm_all=False, preview_column_list=False, additional_columns=
