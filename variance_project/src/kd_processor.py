@@ -1,241 +1,299 @@
-import pandas as pd
-import numpy as np
+######################################################## Processors to handle Kd Values and aggregate across time-scales ######################################################################
 
 class KdProcessor:
-    """
-    A processor class for analyzing Kd_490 measurements over time and space.
-    Uses DateHandler and GeohashHandler to process temporal and spatial data.
-    """
-    
     def __init__(self, date_handler, geohash_handler):
-        """
-        Initialize the KdProcessor.
-        
-        Parameters:
-        -----------
-        date_handler : DateHandler
-            Handler for datetime operations
-        geohash_handler : GeohashHandler
-            Handler for geohash operations
-        """
         self.date_handler = date_handler
         self.geohash_handler = geohash_handler
+        self.df = None
 
-    def load_data(self, data):
+
+    def load_data(self,data):
         self.df = data
-    
-    def preprocess_data(self, timestamp_col, geohash_col, kd_col, geohash_precision=5):
-        """
-        Preprocess the raw data by adding datetime and geospatial information.
-        
-        Parameters:
-        -----------
-        df : pandas.DataFrame
-            DataFrame containing the raw data
-        timestamp_col : str
-            Column name for timestamps
-        geohash_col : str
-            Column name for geohashes
-        kd_col : str
-            Column name for Kd_490 values
-        geohash_precision : int, optional
-            Precision for geohash decoding (default: 5)
-            
-        Returns:
-        --------
-        pandas.DataFrame
-            Preprocessed DataFrame with datetime and geospatial columns
-        """
-        self.timestamp_col = timestamp_col
-        self.geohash_col = geohash_col
-        self.kd_col = kd_col
-        self.gh_precision = geohash_precision
 
-        df = self.df
-        # Process timestamps
-        df_time = self.date_handler.process_dataframe(df=df , timestamp_col=timestamp_col)
-        
-        # Process geohashes
-        df_processed = self.geohash_handler.process_dataframe(df = df_time, geohash_col = geohash_col, precision=geohash_precision)
-        
-        return df_processed
+    @staticmethod
+    def check_columns(df, columns=None):
+        for c in columns:
+            assert c in list(df.columns), f'{c} column is not in columns'
+
+    def process_timestamp(self, timestamp):
+        """Process a single timestamp value and return datetime components."""
+        dt = self.date_handler.timestamp_to_datetime(timestamp)
+        return {
+            'datetime': dt,
+            'year': dt.year,
+            'month': dt.month,
+            'day': dt.day
+        }
     
-    def truncate_geohash(self, geohash_str, precision):
+    
+    
+    def generate_bbox(self,gh_str, precision=5):
+        self.geohash_handler.get_bounding_box(self,gh_str)
+
+    def determine_season(self, lat, datetime_obj):
         """
-        Truncate a geohash to the specified precision.
+        Determine season based on latitude and datetime.
         
         Parameters:
         -----------
-        geohash_str : str
-            Original geohash string
-        precision : int
-            Desired precision
-            
+        lat : float
+            Latitude (-90 to 90)
+        datetime_obj : datetime
+            Date to check
+        
         Returns:
         --------
         str
-            Truncated geohash
+            'summer', 'fall', 'winter', or 'spring'
         """
-        # For standard geohashes
-        if '.' not in geohash_str:
-            return geohash_str[:precision]
+        # Get month and day
+        month = datetime_obj.month
+        day = datetime_obj.day
         
-        # For custom format like "HD9Td.PFTWP"
-        parts = geohash_str.split('.')
-        if len(parts) == 2:
-            return parts[0][:precision]
+        # Northern hemisphere seasons if lat >= 0, otherwise Southern hemisphere
+        is_northern = lat >= 0
         
-        return geohash_str[:precision]
+        # Calculate day of year (0-365)
+        day_of_year = datetime_obj.timetuple().tm_yday
+        
+        if is_northern:
+            if (month == 3 and day >= 20) or (month > 3 and month < 6) or (month == 6 and day < 21):
+                return 'spring'
+            elif (month == 6 and day >= 21) or (month > 6 and month < 9) or (month == 9 and day < 22):
+                return 'summer'
+            elif (month == 9 and day >= 22) or (month > 9 and month < 12) or (month == 12 and day < 21):
+                return 'fall'
+            else:
+                return 'winter'
+        else:
+            # Southern hemisphere (seasons are reversed)
+            if (month == 3 and day >= 20) or (month > 3 and month < 6) or (month == 6 and day < 21):
+                return 'fall'
+            elif (month == 6 and day >= 21) or (month > 6 and month < 9) or (month == 9 and day < 22):
+                return 'winter'
+            elif (month == 9 and day >= 22) or (month > 9 and month < 12) or (month == 12 and day < 21):
+                return 'spring'
+            else:
+                return 'summer'
+        
+    ######################################################## Coordinate stuff ######################################################################
+    def process_coordinates(self, lat, lon, precision=5):
+        """Process coordinates and return geohash at specified precision."""
+        return self.geohash_handler.get_bounding_box(lat, lon, standard_precision=precision)
+                
     
-    def calculate_time_window_variances(self, df, window_days=[5, 10], 
-                                        geohash_precision=5):
+    def preprocess(self, df = None, process_dates=True, process_geohashes=True, precision=5):
+        """Apply processing to a dataframe."""
+        self.precision = precision
+        if not df:
+            df = self.df
+        result = df.copy()
+        
+        if process_dates and 'timestamp' in df.columns:
+            date_data = df['timestamp'].apply(self.process_timestamp)
+            result['datetime'] = date_data.apply(lambda x: x['datetime'])
+            result['year'] = date_data.apply(lambda x: x['year'])
+            result['month'] = date_data.apply(lambda x: x['month'])
+            result['day'] = date_data.apply(lambda x: x['day'])
+
+            # Add season calculation
+            result['season'] = result.apply(
+                lambda row: self.determine_season(row['latitude'], row['datetime']),
+                axis=1
+        )
+            
+        if process_geohashes and 'latitude' in df.columns and 'longitude' in df.columns:
+        # Apply the function to get dictionaries for each row
+            geohash_data = df.apply(
+                lambda row: self.process_coordinates(row['latitude'], row['longitude'], precision),
+                axis=1
+            )
+            
+            # Extract each field from the dictionaries and create new columns
+            result['geohash_std'] = geohash_data.apply(lambda x: x['std_geohash'])
+            result['min_lat'] = geohash_data.apply(lambda x: x['min_lat'])
+            result['max_lat'] = geohash_data.apply(lambda x: x['max_lat'])
+            result['min_lng'] = geohash_data.apply(lambda x: x['min_lng'])
+            result['max_lng'] = geohash_data.apply(lambda x: x['max_lng'])
+            result['center_lat'] = geohash_data.apply(lambda x: x['center_lat'])
+            result['center_lng'] = geohash_data.apply(lambda x: x['center_lng'])
+        
+        self.processed_df = result
+        return result
+    
+
+class KdAggregate:
+    def __init__(self, data, window_days=10, precision=5):
         """
-        Calculate variances in Kd_490 values for specified time windows.
+        Initialize KdAggregate with configuration parameters.
+        
+        Parameters:
+        -----------
+        window_days : int
+            Rolling window size in days to check for readings
+        precision : int
+            Geohash precision level to use for aggregation
+        """
+        self.df = data
+        self.window_days = window_days
+        self.precision = precision
+        self.filtered_data = None
+        self.aggregated_data = None
+    
+    def filter_by_date_range(self, df, start_date=None, end_date=None):
+        """
+        Filter dataframe by date range.
         
         Parameters:
         -----------
         df : pandas.DataFrame
-            Preprocessed DataFrame with datetime and geospatial columns
-        kd_col : str
-            Column name for Kd_490 values
-        timestamp_col : str
-            Column name for timestamps
-        window_days : list, optional
-            List of time windows in days (default: [5, 10])
-        geohash_col : str, optional
-            Column to use for geohash grouping (default: 'std_geohash')
-        geohash_precision : int, optional
-            Precision to truncate geohashes for grouping (default: 5)
+            DataFrame to process
+        start_date : str or datetime, optional
+            Start date for filtering (inclusive)
+        end_date : str or datetime, optional
+            End date for filtering (inclusive)
             
         Returns:
         --------
-        pandas.DataFrame
-            DataFrame with geohash, bounding box, and variance columns
+        self
+            Returns self for method chaining
         """
-        # df = self.df
-        kd_col = self.kd_col
-        timestamp_col = self.timestamp_col
-        geohash_col = self.geohash_col
-
         # Ensure datetime column exists
         if 'datetime' not in df.columns:
-            df = self.date_handler.process_dataframe(df, timestamp_col)
+            raise ValueError("DataFrame must have 'datetime' column. Run preprocess() first.")
         
-        # Truncate geohashes to the specified precision for grouping
-        df['grouped_geohash'] = df[geohash_col].apply(
-            lambda x: self.truncate_geohash(x, geohash_precision)
-        )
+        # Apply date filtering if provided
+        filtered_df = df.copy()
         
-        # Sort by geohash and datetime
-        df_sorted = df.sort_values(['grouped_geohash', 'datetime'])
+        if start_date is not None:
+            if isinstance(start_date, str):
+                start_date = pd.to_datetime(start_date)
+            filtered_df = filtered_df[filtered_df['datetime'] >= start_date]
         
-        # Calculate variances for each time window
-        result_rows = []
+        if end_date is not None:
+            if isinstance(end_date, str):
+                end_date = pd.to_datetime(end_date)
+            filtered_df = filtered_df[filtered_df['datetime'] <= end_date]
         
-        # Group by geohash
-        for geohash, group in df_sorted.groupby('grouped_geohash'):
-            # Sort group by datetime
-            group = group.sort_values('datetime')
-            
-            # Get bounding box info for this geohash (use first row's data)
-            bbox_data = {
-                'min_lat': group['min_lat'].iloc[0],
-                'max_lat': group['max_lat'].iloc[0],
-                'min_lng': group['min_lng'].iloc[0],
-                'max_lng': group['max_lng'].iloc[0],
-                'center_lat': group['center_lat'].iloc[0],
-                'center_lng': group['center_lng'].iloc[0],
-                'geohash': geohash
-            }
-            
-            # Create a dictionary to hold variance results for this geohash
-            variance_data = bbox_data.copy()
-            
-            # Loop through each window size
-            for window in window_days:
-                # Calculate pairwise differences for measurements 'window' days apart
-                pairs = []
-                variance_key = f'kd_variance_{window}day'
-                
-                for i, row1 in group.iterrows():
-                    date1 = row1['datetime']
-                    kd1 = row1[kd_col]
-                    
-                    # Find measurements approximately 'window' days later
-                    later_measurements = group[
-                        (group['datetime'] > date1) & 
-                        (group['datetime'] <= date1 + pd.Timedelta(days=window+0.5)) &
-                        (group['datetime'] >= date1 + pd.Timedelta(days=window-0.5))
-                    ]
-                    
-                    for j, row2 in later_measurements.iterrows():
-                        kd2 = row2[kd_col]
-                        day_diff = (row2['datetime'] - date1).days
-                        
-                        pairs.append({
-                            'kd1': kd1,
-                            'kd2': kd2,
-                            'diff': abs(kd2 - kd1),
-                            'pct_diff': abs((kd2 - kd1) / kd1) * 100 if kd1 != 0 else np.nan,
-                            'days_apart': day_diff
-                        })
-                
-                # Calculate variance statistics if we have pairs
-                if pairs:
-                    pairs_df = pd.DataFrame(pairs)
-                    variance_data[variance_key] = pairs_df['diff'].mean()
-                    variance_data[f'{variance_key}_median'] = pairs_df['diff'].median()
-                    variance_data[f'{variance_key}_std'] = pairs_df['diff'].std()
-                    variance_data[f'{variance_key}_count'] = len(pairs)
-                    variance_data[f'{variance_key}_pct'] = pairs_df['pct_diff'].mean()
-                else:
-                    variance_data[variance_key] = np.nan
-                    variance_data[f'{variance_key}_median'] = np.nan
-                    variance_data[f'{variance_key}_std'] = np.nan
-                    variance_data[f'{variance_key}_count'] = 0
-                    variance_data[f'{variance_key}_pct'] = np.nan
-            
-            result_rows.append(variance_data)
-        
-        # Create result DataFrame
-        result_df = pd.DataFrame(result_rows)
-        
-        return result_df
-    
-    def prepare_for_visualization(self, variance_df, window_days=5, variance_type='kd_variance'):
+        self.filtered_data = filtered_df
+        return self
+
+
+    def calculate_kd_differences(self, value_column='kd_490'):
         """
-        Prepare data for visualization in Dash.
+        Calculate differences between Kd values at intervals specified by window_days.
         
         Parameters:
         -----------
-        variance_df : pandas.DataFrame
-            DataFrame with variance calculations
-        window_days : int, optional
-            Which window size to use for visualization (default: 5)
-        variance_type : str, optional
-            Type of variance to visualize (default: 'kd_variance')
+        value_column : str
+            Column containing Kd values to analyze
             
         Returns:
         --------
-        pandas.DataFrame
-            DataFrame formatted for Dash visualization
+        self
+            Returns self for method chaining
         """
-        # Copy input DataFrame to avoid modifying the original
-        vis_df = variance_df.copy()
+        # Use filtered data if available, otherwise use the original data
+        df_to_use = self.filtered_data if self.filtered_data is not None else self.df
         
-        # Create column name based on window size and variance type
-        col_name = f'{variance_type}_{window_days}day'
+        # Create geohash lookup table (one entry per unique geohash)
+        geohash_lookup = df_to_use.drop_duplicates('geohash_std')[
+            ['geohash_std', 'min_lat', 'max_lat', 'min_lng', 'max_lng', 'center_lat', 'center_lng']
+        ]
         
-        # Filter out rows with missing variance values
-        vis_df = vis_df.dropna(subset=[col_name])
+        # Group by geohash
+        grouped = df_to_use.groupby('geohash_std')
         
-        # Create a column for hover text in Dash
-        vis_df['hover_text'] = vis_df.apply(
-            lambda row: (
-                f"Geohash: {row['geohash']}<br>"
-                f"Variance: {row[col_name]:.4f}<br>"
-                f"Sample count: {row[f'{col_name}_count']}"
-            ), axis=1
-        )
+        # Prepare results container
+        diff_results = []
         
-        return vis_df
+        # Process each geohash group
+        for geohash, group in grouped:
+            # Sort by datetime
+            group = group.sort_values('datetime')
+            
+            # Check if we have enough readings
+            if len(group) >= 2:
+                # Create a list to store the datetime and value pairs
+                time_series = list(zip(group['datetime'], group[value_column]))
+                
+                # Calculate differences based on window_days
+                for i in range(len(time_series) - 1):
+                    current_dt, current_value = time_series[i]
+                    
+                    # Find the next reading that's at least window_days later
+                    for j in range(i + 1, len(time_series)):
+                        next_dt, next_value = time_series[j]
+                        days_diff = (next_dt - current_dt).days
+                        
+                        # If this reading is approximately window_days later, calculate difference
+                        if days_diff >= self.window_days:
+                            # Calculate the difference in Kd values
+                            kd_diff = next_value - current_value
+                            kd_pct_change = (kd_diff / current_value) * 100 if current_value != 0 else float('inf')
+                            
+                            result = {
+                                'geohash_std': geohash,
+                                'start_date': current_dt,
+                                'end_date': next_dt,
+                                'days_between': days_diff,
+                                f'{value_column}_start': current_value,
+                                f'{value_column}_end': next_value,
+                                f'{value_column}_diff': kd_diff,
+                                f'{value_column}_pct_change': kd_pct_change
+                            }
+                            
+                            diff_results.append(result)
+                            break  # Move to the next starting point
+        
+        # Convert results to DataFrame
+        diff_df = pd.DataFrame(diff_results) if diff_results else pd.DataFrame()
+        
+        # Merge with the geohash lookup table
+        if not diff_df.empty:
+            self.aggregated_data = pd.merge(diff_df, geohash_lookup, on='geohash_std')
+        else:
+            self.aggregated_data = diff_df
+        
+        return self
+
+    def aggregate_differences(self, value_column='kd_490'):
+        """
+        Aggregate the calculated differences by geohash.
+        
+        Parameters:
+        -----------
+        value_column : str
+            Base column name used for difference calculations
+            
+        Returns:
+        --------
+        self
+            Returns self for method chaining
+        """
+        # Check if differences have been calculated
+        if self.aggregated_data is None:
+            self.calculate_kd_differences(value_column = value_column)
+        
+        diff_column = f'{value_column}_diff'
+        pct_change_column = f'{value_column}_pct_change'
+        
+        if diff_column not in self.aggregated_data.columns:
+            raise ValueError(f"Difference column '{diff_column}' not found. Ensure you've calculated differences.")
+        
+        # Select the columns to aggregate
+        columns_to_agg = [diff_column, pct_change_column]
+        
+        # Group by geohash and calculate mean
+        summary = self.aggregated_data.groupby('geohash_std')[columns_to_agg].mean().reset_index()
+        
+        # Merge with the geospatial data (keeping only one row per geohash)
+        geospatial_columns = ['min_lat', 'max_lat', 'min_lng', 'max_lng', 'center_lat', 'center_lng']
+        geohash_lookup = self.aggregated_data.drop_duplicates('geohash_std')[
+            ['geohash_std'] + geospatial_columns
+        ]
+        
+        # Merge to get the final summary
+        self.summary_data = pd.merge(summary, geohash_lookup, on='geohash_std')
+        
+        return self
